@@ -1,0 +1,16 @@
+server:
+  port: 8081
+mysql:
+  dsn: "root:root@tcp(127.0.0.1:3306)/hmdp?parseTime=true&loc=Local&charset=utf8mb4"
+  maxIdleConns: 10
+  maxOpenConns: 25
+  connMaxLifetime: 300s
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+app:
+
+  imageUploadDir: "/Users/paul/Documents/coding/code/hmdp-go/nginx-1.18.0/html/hmdp/imgs"
+logging:
+  level: info
