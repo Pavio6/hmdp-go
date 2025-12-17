@@ -8,15 +8,16 @@ import (
 	"hmdp-backend/internal/model"
 )
 
-// SeckillVoucherService mirrors ISeckillVoucherService.
-type SeckillVoucherService interface {
-	Create(ctx context.Context, voucher *model.SeckillVoucher) error
-}
-
-type seckillVoucherService struct {
+// SeckillVoucherService 处理秒杀券相关业务
+type SeckillVoucherService struct {
 	db *gorm.DB
 }
 
-func (s *seckillVoucherService) Create(ctx context.Context, voucher *model.SeckillVoucher) error {
+// NewSeckillVoucherService 创建 SeckillVoucherService 实例
+func NewSeckillVoucherService(db *gorm.DB) *SeckillVoucherService {
+	return &SeckillVoucherService{db: db}
+}
+
+func (s *SeckillVoucherService) Create(ctx context.Context, voucher *model.SeckillVoucher) error {
 	return s.db.WithContext(ctx).Create(voucher).Error
 }

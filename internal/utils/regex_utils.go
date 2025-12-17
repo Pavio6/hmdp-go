@@ -2,12 +2,12 @@ package utils
 
 import "regexp"
 
-// IsPhoneInvalid replicates RegexUtils#isPhoneInvalid.
+// IsPhoneInvalid 验证手机号是否合法
 func IsPhoneInvalid(phone string) bool {
 	return mismatch(phone, PHONE_REGEX)
 }
 
-// IsEmailInvalid replicates RegexUtils#isEmailInvalid.
+// IsEmailInvalid 验证邮箱格式是否合法
 func IsEmailInvalid(email string) bool {
 	return mismatch(email, EMAIL_REGEX)
 }

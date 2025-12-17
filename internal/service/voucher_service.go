@@ -9,23 +9,22 @@ import (
 	"hmdp-backend/internal/model"
 )
 
-// VoucherService mirrors IVoucherService.
-type VoucherService interface {
-	Create(ctx context.Context, voucher *model.Voucher) error
-	QueryVoucherOfShop(ctx context.Context, shopID int64) ([]model.Voucher, error)
-	AddSeckillVoucher(ctx context.Context, voucher *model.Voucher) error
-}
-
-type voucherService struct {
+// VoucherService 处理普通券与秒杀券逻辑
+type VoucherService struct {
 	db         *gorm.DB
-	seckillSvc SeckillVoucherService
+	seckillSvc *SeckillVoucherService
 }
 
-func (s *voucherService) Create(ctx context.Context, voucher *model.Voucher) error {
+// NewVoucherService 创建 VoucherService 实例
+func NewVoucherService(db *gorm.DB, seckillSvc *SeckillVoucherService) *VoucherService {
+	return &VoucherService{db: db, seckillSvc: seckillSvc}
+}
+
+func (s *VoucherService) Create(ctx context.Context, voucher *model.Voucher) error {
 	return s.db.WithContext(ctx).Create(voucher).Error
 }
 
-func (s *voucherService) QueryVoucherOfShop(ctx context.Context, shopID int64) ([]model.Voucher, error) {
+func (s *VoucherService) QueryVoucherOfShop(ctx context.Context, shopID int64) ([]model.Voucher, error) {
 	var vouchers []model.Voucher
 	query := `
         SELECT v.id, v.shop_id, v.title, v.sub_title, v.rules, v.pay_value,
@@ -38,7 +37,7 @@ func (s *voucherService) QueryVoucherOfShop(ctx context.Context, shopID int64) (
 	return vouchers, err
 }
 
-func (s *voucherService) AddSeckillVoucher(ctx context.Context, voucher *model.Voucher) error {
+func (s *VoucherService) AddSeckillVoucher(ctx context.Context, voucher *model.Voucher) error {
 	if err := s.Create(ctx, voucher); err != nil {
 		return err
 	}

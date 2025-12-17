@@ -8,16 +8,17 @@ import (
 	"hmdp-backend/internal/model"
 )
 
-// ShopTypeService mirrors IShopTypeService.
-type ShopTypeService interface {
-	List(ctx context.Context) ([]model.ShopType, error)
-}
-
-type shopTypeService struct {
+// ShopTypeService 处理店铺类型数据
+type ShopTypeService struct {
 	db *gorm.DB
 }
 
-func (s *shopTypeService) List(ctx context.Context) ([]model.ShopType, error) {
+// NewShopTypeService 创建 ShopTypeService 实例
+func NewShopTypeService(db *gorm.DB) *ShopTypeService {
+	return &ShopTypeService{db: db}
+}
+
+func (s *ShopTypeService) List(ctx context.Context) ([]model.ShopType, error) {
 	var types []model.ShopType
 	err := s.db.WithContext(ctx).
 		Order("sort ASC").

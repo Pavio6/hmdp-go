@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"hmdp-backend/internal/config"
 	"hmdp-backend/internal/data"
-	"hmdp-backend/internal/handler"
 	"hmdp-backend/internal/middleware"
+	"hmdp-backend/internal/router"
 	"hmdp-backend/internal/service"
 	"hmdp-backend/internal/utils"
 	"hmdp-backend/pkg/logger"
@@ -22,6 +26,7 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/app.yaml"
 	}
+	// 加载配置
 	cfg := config.MustLoad(cfgPath)
 	log, err := logger.New(cfg.Logging.Level)
 	if err != nil {
@@ -30,7 +35,7 @@ func main() {
 	defer log.Sync()
 	log.Info("loaded config", zap.String("path", cfgPath))
 
-	log.Info("connecting to mysql")
+	// 初始化 MySQL
 	db, err := data.NewMySQL(cfg.MySQL, log)
 	if err != nil {
 		log.Fatal("mysql init failed", zap.Error(err))
@@ -42,6 +47,7 @@ func main() {
 	defer sqlDB.Close()
 	log.Info("connected to mysql")
 
+	// 初始化 Redis
 	redisClient := data.NewRedis(cfg.Redis)
 	if err := data.Ping(context.Background(), redisClient); err != nil {
 		log.Fatal("redis ping failed", zap.Error(err))
@@ -49,42 +55,46 @@ func main() {
 	defer redisClient.Close()
 	log.Info("connected to redis", zap.String("addr", cfg.Redis.Addr))
 
-	services := service.NewRegistry(db)
+	// 构建 Service Registry
+	services := service.NewRegistry(db, redisClient)
 
+	// 初始化 Gin 引擎
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Logger())
 	engine.Use(gin.Recovery())
 	engine.Use(middleware.ErrorHandler(log))
 
-	shopHandler := handler.NewShopHandler(services.Shop)
-	shopTypeHandler := handler.NewShopTypeHandler(services.ShopType)
-	voucherHandler := handler.NewVoucherHandler(services.Voucher)
-	blogHandler := handler.NewBlogHandler(services.Blog, services.User)
 	uploadDir := cfg.App.ImageUploadDir
 	if uploadDir == "" {
 		uploadDir = utils.IMAGE_UPLOAD_DIR
 	}
-	uploadHandler := handler.NewUploadHandler(uploadDir)
 	log.Info("configured upload directory", zap.String("path", uploadDir))
-	userHandler := handler.NewUserHandler(services.User, services.UserInfo)
-	voucherOrderHandler := handler.NewVoucherOrderHandler()
-	blogCommentsHandler := handler.NewBlogCommentsHandler()
-	followHandler := handler.NewFollowHandler()
-
-	shopHandler.RegisterRoutes(engine)
-	shopTypeHandler.RegisterRoutes(engine)
-	voucherHandler.RegisterRoutes(engine)
-	blogHandler.RegisterRoutes(engine)
-	uploadHandler.RegisterRoutes(engine)
-	userHandler.RegisterRoutes(engine)
-	voucherOrderHandler.RegisterRoutes(engine)
-	blogCommentsHandler.RegisterRoutes(engine)
-	followHandler.RegisterRoutes(engine)
+	router.RegisterRoutes(engine, services, uploadDir, redisClient)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	log.Info("starting http server", zap.String("addr", addr))
-	if err := engine.Run(addr); err != nil {
-		log.Fatal("server run failed", zap.Error(err))
+	server := &http.Server{
+		Addr:    addr,
+		Handler: engine,
 	}
+	// 启动 HTTP 服务（异步）
+	go func() {
+		log.Info("starting http server", zap.String("addr", addr))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("server run failed", zap.Error(err))
+		}
+	}()
+
+	// 监听系统信号，执行优雅关闭
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Info("shutting down server...")
+
+	ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctxShutdown); err != nil {
+		log.Fatal("server shutdown failed", zap.Error(err))
+	}
+	log.Info("server exited")
 }

@@ -1,0 +1,20 @@
+# IDE
+.idea/
+*.iml
+
+# Build artifacts and binaries
+bin/
+*.out
+*.exe
+
+# Go build cache / test cache
+.gocache/
+cover.out
+
+# Logs and temp files
+*.log
+*.tmp
+.DS_Store
+
+# Uploaded images / runtime data
+opt/homebrew/var/www/hmdp/imgs

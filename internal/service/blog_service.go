@@ -8,23 +8,21 @@ import (
 	"hmdp-backend/internal/model"
 )
 
-// BlogService mirrors IBlogService usage.
-type BlogService interface {
-	Create(ctx context.Context, blog *model.Blog) error
-	IncrementLike(ctx context.Context, id int64) error
-	QueryByUser(ctx context.Context, userID int64, page, size int) ([]model.Blog, error)
-	QueryHot(ctx context.Context, page, size int) ([]model.Blog, error)
-}
-
-type blogService struct {
+// BlogService 处理博客相关业务逻辑
+type BlogService struct {
 	db *gorm.DB
 }
 
-func (s *blogService) Create(ctx context.Context, blog *model.Blog) error {
+// NewBlogService 创建 BlogService 实例
+func NewBlogService(db *gorm.DB) *BlogService {
+	return &BlogService{db: db}
+}
+
+func (s *BlogService) Create(ctx context.Context, blog *model.Blog) error {
 	return s.db.WithContext(ctx).Create(blog).Error
 }
 
-func (s *blogService) IncrementLike(ctx context.Context, id int64) error {
+func (s *BlogService) IncrementLike(ctx context.Context, id int64) error {
 	return s.db.WithContext(ctx).
 		Model(&model.Blog{}).
 		Where("id = ?", id).
@@ -32,7 +30,7 @@ func (s *blogService) IncrementLike(ctx context.Context, id int64) error {
 		Error
 }
 
-func (s *blogService) QueryByUser(ctx context.Context, userID int64, page, size int) ([]model.Blog, error) {
+func (s *BlogService) QueryByUser(ctx context.Context, userID int64, page, size int) ([]model.Blog, error) {
 	var blogs []model.Blog
 	offset := (page - 1) * size
 	if offset < 0 {
@@ -47,7 +45,7 @@ func (s *blogService) QueryByUser(ctx context.Context, userID int64, page, size 
 	return blogs, err
 }
 
-func (s *blogService) QueryHot(ctx context.Context, page, size int) ([]model.Blog, error) {
+func (s *BlogService) QueryHot(ctx context.Context, page, size int) ([]model.Blog, error) {
 	var blogs []model.Blog
 	offset := (page - 1) * size
 	if offset < 0 {

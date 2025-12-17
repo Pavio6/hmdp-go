@@ -1,28 +1,29 @@
 package service
 
-import "gorm.io/gorm"
+import (
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+)
 
-// Registry aggregates all service implementations for easy wiring.
+// Registry 聚合全部业务 Service，方便注入 handler
 type Registry struct {
-	Blog           BlogService
-	Shop           ShopService
-	ShopType       ShopTypeService
-	Voucher        VoucherService
-	SeckillVoucher SeckillVoucherService
-	User           UserService
-	UserInfo       UserInfoService
+	Blog           *BlogService
+	Shop           *ShopService
+	ShopType       *ShopTypeService
+	Voucher        *VoucherService
+	SeckillVoucher *SeckillVoucherService
+	User           *UserService
 }
 
-// NewRegistry wires all services using the shared DB.
-func NewRegistry(db *gorm.DB) *Registry {
-	seckillSvc := &seckillVoucherService{db: db}
+// NewRegistry 使用共享 DB 与 Redis 构建所有服务
+func NewRegistry(db *gorm.DB, rdb *redis.Client) *Registry {
+	seckillSvc := NewSeckillVoucherService(db)
 	return &Registry{
-		Blog:           &blogService{db: db},
-		Shop:           &shopService{db: db},
-		ShopType:       &shopTypeService{db: db},
-		Voucher:        &voucherService{db: db, seckillSvc: seckillSvc},
+		Blog:           NewBlogService(db),
+		Shop:           NewShopService(db),
+		ShopType:       NewShopTypeService(db),
+		Voucher:        NewVoucherService(db, seckillSvc),
 		SeckillVoucher: seckillSvc,
-		User:           &userService{db: db},
-		UserInfo:       &userInfoService{db: db},
+		User:           NewUserService(db, rdb),
 	}
 }

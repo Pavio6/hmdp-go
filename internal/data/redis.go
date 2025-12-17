@@ -8,7 +8,7 @@ import (
 	"hmdp-backend/internal/config"
 )
 
-// NewRedis returns a configured go-redis client.
+// NewRedis 返回Redis客户端
 func NewRedis(cfg config.RedisConfig) *redis.Client {
 	return redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
@@ -17,7 +17,7 @@ func NewRedis(cfg config.RedisConfig) *redis.Client {
 	})
 }
 
-// Ping ensures the redis connection is healthy.
+// Ping 健康检查
 func Ping(ctx context.Context, client *redis.Client) error {
 	return client.Ping(ctx).Err()
 }

@@ -10,7 +10,6 @@ redis:
   password: ""
   db: 0
 app:
-
-  imageUploadDir: "/Users/paul/Documents/coding/code/hmdp-go/nginx-1.18.0/html/hmdp/imgs"
+  imageUploadDir: "/opt/homebrew/var/www/hmdp/imgs"
 logging:
   level: info
