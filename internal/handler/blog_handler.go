@@ -225,3 +225,50 @@ func (h *BlogHandler) QueryBlogOfUser(ctx *gin.Context) {
 	}
 	ctx.JSON(http.StatusOK, result.OkWithData(blogs))
 }
+
+// QueryFollowFeed 获取关注的笔记流（滚动分页：lastId=上次最小时间戳，offset=同分数偏移）
+func (h *BlogHandler) QueryFollowFeed(ctx *gin.Context) {
+	loginUser, ok := middleware.GetLoginUser(ctx)
+	if !ok || loginUser == nil {
+		ctx.JSON(http.StatusUnauthorized, result.Fail("未登录"))
+		return
+	}
+	lastIDStr := ctx.DefaultQuery("lastId", "0")
+	offsetStr := ctx.DefaultQuery("offset", "0")
+	lastID, _ := strconv.ParseInt(lastIDStr, 10, 64)
+	offset, _ := strconv.ParseInt(offsetStr, 10, 64)
+	if offset < 0 {
+		offset = 0
+	}
+
+	blogs, nextLast, nextOffset, err := h.blogService.QueryFeed(ctx.Request.Context(), loginUser.ID, lastID, offset, 10)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, result.Fail(err.Error()))
+		return
+	}
+
+	// 填充作者信息与 isLike
+	for i := range blogs {
+		user, err := h.userService.FindByID(ctx.Request.Context(), blogs[i].UserID)
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, result.Fail(err.Error()))
+			return
+		}
+		if user != nil {
+			blogs[i].Name = user.NickName
+			blogs[i].Icon = user.Icon
+		}
+		isLike, err := h.blogService.IsLiked(ctx.Request.Context(), blogs[i].ID, loginUser.ID)
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, result.Fail(err.Error()))
+			return
+		}
+		blogs[i].IsLike = &isLike
+	}
+
+	ctx.JSON(http.StatusOK, result.OkWithData(map[string]interface{}{
+		"blogs":  blogs,
+		"lastId": nextLast,
+		"offset": nextOffset,
+	}))
+}

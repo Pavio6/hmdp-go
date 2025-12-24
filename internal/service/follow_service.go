@@ -57,6 +57,18 @@ func (s *FollowService) IsFollowing(ctx context.Context, userID, targetID int64)
 	return count > 0, err
 }
 
+// FollowerIDs 查询关注了 targetID 的粉丝ID列表
+func (s *FollowService) FollowerIDs(ctx context.Context, targetID int64) ([]int64, error) {
+	var ids []int64
+	if err := s.db.WithContext(ctx).
+		Model(&model.Follow{}).
+		Where("follow_user_id = ?", targetID).
+		Pluck("user_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // CommonFollowIDs 求 userID 与 targetID 的共同关注用户ID列表（Redis SINTER）
 func (s *FollowService) CommonFollowIDs(ctx context.Context, userID, targetID int64) ([]int64, error) {
 	if userID == targetID {

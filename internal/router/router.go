@@ -44,6 +44,7 @@ func RegisterRoutes(engine *gin.Engine, services *service.Registry, uploadDir st
 	blogGroup.GET("/likes/:id", blogHandler.QueryBlogLikes)
 	blogGroup.GET("/of/me", blogHandler.QueryMyBlog)
 	blogGroup.GET("/of/user", blogHandler.QueryBlogOfUser)
+	blogGroup.GET("/of/follow", blogHandler.QueryFollowFeed)
 	blogGroup.GET("/hot", blogHandler.QueryHotBlog)
 
 	uploadGroup := engine.Group("/upload")
