@@ -20,7 +20,7 @@ type Registry struct {
 func NewRegistry(db *gorm.DB, rdb *redis.Client) *Registry {
 	seckillSvc := NewSeckillVoucherService(db)
 	return &Registry{
-		Blog:           NewBlogService(db),
+		Blog:           NewBlogService(db, rdb),
 		Shop:           NewShopService(db, rdb),
 		ShopType:       NewShopTypeService(db, rdb),
 		Voucher:        NewVoucherService(db, seckillSvc, rdb),

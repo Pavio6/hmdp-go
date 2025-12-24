@@ -12,8 +12,8 @@ type Blog struct {
 	Content    string    `gorm:"column:content" json:"content"`
 	Liked      int       `gorm:"column:liked" json:"liked"`
 	Comments   int       `gorm:"column:comments" json:"comments"`
-	CreateTime time.Time `gorm:"column:create_time" json:"createTime"`
-	UpdateTime time.Time `gorm:"column:update_time" json:"updateTime"`
+	CreateTime time.Time `gorm:"column:create_time;autoCreateTime" json:"createTime"`
+	UpdateTime time.Time `gorm:"column:update_time;autoUpdateTime" json:"updateTime"`
 	Icon       string    `gorm:"-" json:"icon,omitempty"`
 	Name       string    `gorm:"-" json:"name,omitempty"`
 	IsLike     *bool     `gorm:"-" json:"isLike,omitempty"`
