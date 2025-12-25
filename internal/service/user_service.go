@@ -136,8 +136,8 @@ func (s *UserService) CountContinuousSign(ctx context.Context, userID int64, now
 	year, month, day := now.Date()
 	key := fmt.Sprintf("user:sign:%d:%d:%02d", userID, year, int(month))
 
-	// 使用 BITFIELD 一次取出当月 1..day 的签到位，再从最低位开始统计连续 1 的数量。
-	// Redis 位序：offset=0 在返回值的最高位，offset=day-1 在最低位，因此右移即可。
+	// 使用 BITFIELD 一次取出当月 1..day 的签到位，再从最低位开始统计连续 1 的数量
+	// Redis 位序：offset=0 在返回值的最高位，offset=day-1 在最低位，因此右移即可
 	reply, err := s.rdb.BitField(ctx, key, "GET", fmt.Sprintf("u%d", day), "0").Result()
 	if err != nil {
 		return 0, err
@@ -147,11 +147,12 @@ func (s *UserService) CountContinuousSign(ctx context.Context, userID int64, now
 	}
 	val := reply[0]
 	count := 0
-	for range day {
+	for i := 0; i < day; i++ { // 逐位向前检查，遇到未签到即停止
 		if val&1 == 0 {
 			break
 		}
 		count++
+		// 将val值右移一位(二进制所有位都右移) 下一轮就可以判断前一天是否签到了
 		val >>= 1
 	}
 	return count, nil

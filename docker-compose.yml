@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   mysql-hmdp:
     image: mysql:8
