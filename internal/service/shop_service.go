@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"hmdp-backend/internal/model"
@@ -20,11 +22,12 @@ const lockRetryDelay = 50 * time.Millisecond // 拿不到互斥锁时的短暂�
 type ShopService struct {
 	db  *gorm.DB
 	rdb *redis.Client
+	log *zap.Logger
 }
 
 // NewShopService 创建 ShopService 实例
-func NewShopService(db *gorm.DB, rdb *redis.Client) *ShopService {
-	return &ShopService{db: db, rdb: rdb}
+func NewShopService(db *gorm.DB, rdb *redis.Client, log *zap.Logger) *ShopService {
+	return &ShopService{db: db, rdb: rdb, log: log}
 }
 
 // GetByID 根据shopId获取shop信息 - 使用互斥锁解决缓存击穿问题
@@ -261,4 +264,90 @@ func (s *ShopService) QueryByName(ctx context.Context, name string, page, size i
 	}
 	err := query.Order("id ASC").Offset(offset).Limit(size).Find(&shops).Error
 	return shops, err
+}
+
+// QueryByTypeWithLocation 根据类型 + 坐标查询店铺，按距离排序
+// x、y 为用户经纬度，page/size 用于分页，优先使用 Redis GEO，缺少坐标时可退回 QueryByType。
+func (s *ShopService) QueryByTypeWithLocation(ctx context.Context, typeID int64, page, size int, x, y float64) ([]model.Shop, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = utils.DEFAULT_PAGE_SIZE
+	}
+	// page=1时 start=0 end=5  0~4
+	// page=2时 start=5 end=10 5~9
+	start := (page - 1) * size
+	end := page * size
+	key := utils.SHOP_GEO_KEY + strconv.FormatInt(typeID, 10)
+
+	// 直接使用 GEOSEARCH，COUNT 使用 end
+	query := &redis.GeoSearchLocationQuery{
+		GeoSearchQuery: redis.GeoSearchQuery{
+			Longitude:  x,
+			Latitude:   y,
+			Radius:     20000,
+			RadiusUnit: "m",
+			Sort:       "ASC", // 距离升序
+			Count:      end,   // 取到当前页末尾
+		},
+		WithDist:  true, // 需要距离信息
+		WithCoord: true, // 返回坐标
+	}
+	locs, err := s.rdb.GeoSearchLocation(ctx, key, query).Result()
+	if err != nil {
+		return nil, err
+	}
+	if s.log != nil {
+		raw := make([]string, 0, len(locs))
+		for i, loc := range locs {
+			raw = append(raw, fmt.Sprintf("%d:%s:%.2f", i, loc.Name, loc.Dist))
+		}
+		s.log.Sugar().Infow("geo search raw", "page", page, "start", start, "end", end, "count", len(locs), "raw", raw)
+	}
+	if len(locs) <= start {
+		return []model.Shop{}, nil
+	}
+	if len(locs) > end {
+		locs = locs[:end]
+	}
+	locs = locs[start:]
+	if s.log != nil {
+		pageIDs := make([]string, 0, len(locs))
+		for i, loc := range locs {
+			pageIDs = append(pageIDs, fmt.Sprintf("%d:%s:%.2f", i, loc.Name, loc.Dist))
+		}
+		s.log.Sugar().Infow("geo page slice", "page", page, "start", start, "end", end, "pageCount", len(locs), "ids", pageIDs)
+	}
+
+	// 取出 shopIds，按顺序回表查询并带回距离
+	ids := make([]int64, 0, len(locs))
+	for _, loc := range locs {
+		id, parseErr := strconv.ParseInt(loc.Name, 10, 64)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		ids = append(ids, id)
+	}
+
+	var shops []model.Shop
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&shops).Error; err != nil {
+		return nil, err
+	}
+	shopMap := make(map[int64]model.Shop, len(shops))
+	for _, shop := range shops {
+		shopMap[shop.ID] = shop
+	}
+
+	// 按 GEO 结果的顺序输出，并附上距离（单位米）
+	res := make([]model.Shop, 0, len(ids))
+	for _, loc := range locs {
+		id, _ := strconv.ParseInt(loc.Name, 10, 64)
+		if shop, ok := shopMap[id]; ok {
+			dist := loc.Dist
+			shop.Distance = &dist
+			res = append(res, shop)
+		}
+	}
+	return res, nil
 }

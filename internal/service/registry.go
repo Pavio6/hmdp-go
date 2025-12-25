@@ -2,6 +2,7 @@ package service
 
 import (
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -18,12 +19,15 @@ type Registry struct {
 }
 
 // NewRegistry 使用共享 DB 与 Redis 构建所有服务
-func NewRegistry(db *gorm.DB, rdb *redis.Client) *Registry {
+func NewRegistry(db *gorm.DB, rdb *redis.Client, log *zap.Logger) *Registry {
+	if log == nil {
+		log = zap.NewNop()
+	}
 	seckillSvc := NewSeckillVoucherService(db)
 	followSvc := NewFollowService(db, rdb)
 	return &Registry{
 		Blog:           NewBlogService(db, rdb, followSvc),
-		Shop:           NewShopService(db, rdb),
+		Shop:           NewShopService(db, rdb, log),
 		ShopType:       NewShopTypeService(db, rdb),
 		Voucher:        NewVoucherService(db, seckillSvc, rdb),
 		SeckillVoucher: seckillSvc,

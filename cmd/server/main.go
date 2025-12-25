@@ -55,8 +55,8 @@ func main() {
 	defer redisClient.Close()
 	log.Info("connected to redis", zap.String("addr", cfg.Redis.Addr))
 
-	// 构建 Service Registry
-	services := service.NewRegistry(db, redisClient)
+	// 构建 Service Registry（传入统一 logger）
+	services := service.NewRegistry(db, redisClient, log)
 
 	// 初始化 Gin 引擎
 	gin.SetMode(gin.ReleaseMode)

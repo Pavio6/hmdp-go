@@ -19,6 +19,7 @@ type ShopHandler struct {
 func NewShopHandler(svc *service.ShopService) *ShopHandler {
 	return &ShopHandler{service: svc}
 }
+
 // QueryShopByID 根据ID查询店铺
 func (h *ShopHandler) QueryShopByID(ctx *gin.Context) {
 	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
@@ -46,6 +47,7 @@ func (h *ShopHandler) SaveShop(ctx *gin.Context) {
 	}
 	ctx.JSON(http.StatusOK, result.OkWithData(shop.ID))
 }
+
 // UpdateShop 更新店铺信息
 func (h *ShopHandler) UpdateShop(ctx *gin.Context) {
 	var shop model.Shop
@@ -60,6 +62,7 @@ func (h *ShopHandler) UpdateShop(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, result.Ok())
 }
 
+// QueryShopByType 根据类型分页查询店铺
 func (h *ShopHandler) QueryShopByType(ctx *gin.Context) {
 	typeIDStr := ctx.Query("typeId")
 	if typeIDStr == "" {
@@ -72,6 +75,30 @@ func (h *ShopHandler) QueryShopByType(ctx *gin.Context) {
 		return
 	}
 	page := utils.ParsePage(ctx.Query("current"), 1)
+
+	xStr, yStr := ctx.Query("x"), ctx.Query("y")
+	// 如果传入经纬度，则按距离排序
+	if xStr != "" && yStr != "" {
+		x, err := strconv.ParseFloat(xStr, 64)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, result.Fail("invalid x"))
+			return
+		}
+		y, err := strconv.ParseFloat(yStr, 64)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, result.Fail("invalid y"))
+			return
+		}
+		shops, err := h.service.QueryByTypeWithLocation(ctx.Request.Context(), typeID, page, utils.DEFAULT_PAGE_SIZE, x, y)
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, result.Fail(err.Error()))
+			return
+		}
+		ctx.JSON(http.StatusOK, result.OkWithData(shops))
+		return
+	}
+
+	// 未提供经纬度则按原逻辑分页查询
 	shops, err := h.service.QueryByType(ctx.Request.Context(), typeID, page, utils.DEFAULT_PAGE_SIZE)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, result.Fail(err.Error()))

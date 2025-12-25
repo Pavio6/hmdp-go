@@ -27,9 +27,3 @@ func Fail(msg string) Result {
 	return Result{Success: false, ErrorMsg: msg}
 }
 
-// ScrollResult 滚动分页的辅助响应
-type ScrollResult struct {
-	List    interface{} `json:"list"`
-	MinTime int64       `json:"minTime"`
-	Offset  int         `json:"offset"`
-}
