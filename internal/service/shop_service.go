@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strconv"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 )
 
 const lockRetryDelay = 50 * time.Millisecond // 拿不到互斥锁时的短暂休眠时间，避免热点击穿
+const shopBloomSize = 1 << 20                // 约 1M 位布隆过滤器
+var shopBloomSeeds = []uint32{17, 29, 37}    // 简单多哈希种子
 
 // ShopService 处理商铺相关业务逻辑
 type ShopService struct {
@@ -38,17 +41,15 @@ func (s *ShopService) GetByID(ctx context.Context, id int64) (*model.Shop, error
 	for {
 		// 1.从 Redis 查询商铺缓存
 		cached, err := s.rdb.Get(ctx, key).Result()
+		// err为空 说明查询到了缓存
 		if err == nil {
-			// 这里是防止缓存穿透而将空值放到了redis中
-			if cached == "" {
-				return nil, errors.New("shop not found")
-			}
 			var shop model.Shop
 			if unmarshalErr := json.Unmarshal([]byte(cached), &shop); unmarshalErr != nil {
 				return nil, unmarshalErr
 			}
 			return &shop, nil
 		}
+		// 如果err不是redis.Nil，说明是其他错误，直接返回
 		if !errors.Is(err, redis.Nil) {
 			return nil, err
 		}
@@ -68,9 +69,6 @@ func (s *ShopService) GetByID(ctx context.Context, id int64) (*model.Shop, error
 		cached, err = s.rdb.Get(ctx, key).Result()
 		if err == nil {
 			var shop model.Shop
-			if cached == "" {
-				return nil, errors.New("shop not found")
-			}
 			if unmarshalErr := json.Unmarshal([]byte(cached), &shop); unmarshalErr != nil {
 				return nil, unmarshalErr
 			}
@@ -90,7 +88,10 @@ func (s *ShopService) GetByID(ctx context.Context, id int64) (*model.Shop, error
 }
 
 // GetByIDWithLogicalExpire 根据shopId获取shop信息 - 使用逻辑过期时间解决热点 Key 缓存击穿
+
 // 逻辑过期前提是：Redis 里必须有旧值可以返回
+// 启动或定时预先将热点数据加载到 Redis，并设置逻辑过期时间
+// 自动兜底方案：也可以在未命中时查询数据库并写入逻辑过期缓存
 func (s *ShopService) GetByIDWithLogicalExpire(ctx context.Context, id int64) (*model.Shop, error) {
 	key := utils.CACHE_SHOP_KEY + strconv.FormatInt(id, 10)
 	lockKey := utils.LOCK_SHOP_KEY + strconv.FormatInt(id, 10)
@@ -150,13 +151,35 @@ func (s *ShopService) GetByIDWithLogicalExpire(ctx context.Context, id int64) (*
 	return &shop, nil
 }
 
+// GetByIDWithBloom 使用布隆过滤器先拦截不存在的 ID，降低缓存穿透风险
+// Bloom 判定“可能存在”才继续后续缓存/数据库流程；判定“不存在”直接返回 nil
+func (s *ShopService) GetByIDWithBloom(ctx context.Context, id int64) (*model.Shop, error) {
+	bloomKey := utils.SHOP_BLOOM_KEY
+	maybe, err := s.bloomMightContain(ctx, bloomKey, id)
+	if err != nil {
+		return nil, err
+	}
+	if !maybe {
+		// 布隆认为不存在，直接返回 nil，避免穿透
+		return nil, nil
+	}
+
+	shop, err := s.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if shop != nil {
+		// 查询成功后，将 ID 补充进布隆，便于后续请求
+		_ = s.bloomAdd(ctx, bloomKey, id)
+	}
+	return shop, nil
+}
+
 // loadShopAndCache 查询数据库并将结果写入 Redis，配合互斥锁使用
 func (s *ShopService) loadShopAndCache(ctx context.Context, id int64, key string) (*model.Shop, error) {
 	var shop model.Shop
 	err := s.db.WithContext(ctx).First(&shop, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// 写入空值，防止缓存穿透
-		_ = s.rdb.Set(ctx, key, "", time.Duration(utils.CACHE_NULL_TTL)*time.Minute).Err()
 		return nil, errors.New("shop not found")
 	}
 	if err != nil {
@@ -184,7 +207,6 @@ func (s *ShopService) rebuildShopCacheWithLogicalExpire(id int64, key string) er
 	if err != nil {
 		return err
 	}
-	// 测试场景：逻辑过期时间先调小到 200ms，便于快速验证重建
 	return s.saveShopWithLogicalExpire(key, &shop, time.Duration(utils.CACHE_SHOP_TTL)*time.Minute)
 }
 
@@ -198,7 +220,6 @@ func (s *ShopService) saveShopWithLogicalExpire(key string, shop *model.Shop, tt
 	if err != nil {
 		return err
 	}
-	// 逻辑过期不依赖 Redis TTL，这里不设置过期时间
 	return s.rdb.Set(context.Background(), key, data, 0).Err()
 }
 
@@ -264,6 +285,50 @@ func (s *ShopService) QueryByName(ctx context.Context, name string, page, size i
 	}
 	err := query.Order("id ASC").Offset(offset).Limit(size).Find(&shops).Error
 	return shops, err
+}
+
+// bloomMightContain 检查布隆过滤器是否可能包含该 ID
+func (s *ShopService) bloomMightContain(ctx context.Context, key string, id int64) (bool, error) {
+	// 获取该id对应的多个位偏移
+	offsets := bloomOffsets(id)
+	// 检查这些偏移位是否都为1
+	for _, off := range offsets {
+		bit, err := s.rdb.GetBit(ctx, key, int64(off)).Result()
+		if err != nil {
+			return false, err
+		}
+		if bit == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// bloomAdd 将 ID 写入布隆过滤器
+func (s *ShopService) bloomAdd(ctx context.Context, key string, id int64) error {
+	offsets := bloomOffsets(id)
+	// 使用管道批量写位 减少往返
+	pipe := s.rdb.Pipeline()
+	for _, off := range offsets {
+		// 将对应偏移的位设置为1
+		pipe.SetBit(ctx, key, int64(off), 1)
+	}
+	// 提交管道命令
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// bloomOffsets 生成布隆过滤器位偏移
+func bloomOffsets(id int64) []uint32 {
+	res := make([]uint32, 0, len(shopBloomSeeds))
+	// 遍历每个哈希种子 生成多组哈希
+	for _, seed := range shopBloomSeeds {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(strconv.FormatInt(id, 10)))
+		sum := h.Sum32() + seed
+		res = append(res, sum%shopBloomSize)
+	}
+	return res
 }
 
 // QueryByTypeWithLocation 根据类型 + 坐标查询店铺，按距离排序

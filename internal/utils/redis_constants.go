@@ -17,4 +17,5 @@ const (
 	FEED_KEY            = "feed:"
 	SHOP_GEO_KEY        = "shop:geo:"
 	USER_SIGN_KEY       = "sign:"
+	SHOP_BLOOM_KEY      = "bloom:shop"
 )

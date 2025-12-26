@@ -27,7 +27,7 @@ func (h *ShopHandler) QueryShopByID(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, result.Fail(err.Error()))
 		return
 	}
-	shop, err := h.service.GetByIDWithLogicalExpire(ctx.Request.Context(), id)
+	shop, err := h.service.GetByIDWithBloom(ctx.Request.Context(), id)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, result.Fail(err.Error()))
 		return
