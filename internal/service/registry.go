@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"hmdp-backend/internal/config"
 	"hmdp-backend/internal/utils"
 )
 
@@ -28,10 +29,15 @@ func NewRegistry(
 	kafkaWriter *kafka.Writer,
 	kafkaRetryWriter *kafka.Writer,
 	kafkaDLQWriter *kafka.Writer,
+	cacheInvalidateWriter *kafka.Writer,
+	cacheInvalidateDLQWriter *kafka.Writer,
 	kafkaReader *kafka.Reader,
 	kafkaRetryReader *kafka.Reader,
 	kafkaDLQReader *kafka.Reader,
+	cacheInvalidateReader *kafka.Reader,
+	cacheInvalidateDLQReader *kafka.Reader,
 	smtpCfg utils.SMTPConfig,
+	shopCacheCfg config.ShopCacheConfig,
 	log *zap.Logger,
 ) *Registry {
 	if log == nil {
@@ -41,7 +47,7 @@ func NewRegistry(
 	followSvc := NewFollowService(db, rdb)
 	return &Registry{
 		Blog:           NewBlogService(db, rdb, followSvc),
-		Shop:           NewShopService(db, rdb, log),
+		Shop:           NewShopService(db, rdb, cacheInvalidateWriter, cacheInvalidateDLQWriter, cacheInvalidateReader, cacheInvalidateDLQReader, smtpCfg, shopCacheCfg, log),
 		ShopType:       NewShopTypeService(db, rdb),
 		Voucher:        NewVoucherService(db, seckillSvc, rdb),
 		SeckillVoucher: seckillSvc,

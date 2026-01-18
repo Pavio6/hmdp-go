@@ -24,16 +24,20 @@
 
 ### 商铺查询二级缓存（L1 + L2）
 1. 读路径顺序：L1 本地缓存（BigCache）→ Redis → DB
-2. L1 TTL 默认 30s（可通过 `SHOP_LOCAL_CACHE_TTL` 覆盖），用于热点加速
+2. L1 TTL 默认 30s（`configs/app.yaml` 中 `app.shopCache.localTTL` 可调），用于热点加速
 3. Redis 命中或 DB 回填后写入 L1，减少重复反序列化与网络开销
 4. 更新商铺时：先更新数据库，再删除 Redis，同时删除 L1，避免脏读
-5. L1 仅作加速层，不保证强一致，以 Redis/DB 为准
+5. 删除缓存使用“重试”，重试次数/间隔可在 `app.shopCache` 中配置
+6. 删除失败会写入 Kafka 补偿 Topic，由消费者执行缓存删除；失败直接进入 DLQ 并告警
+7. Kafka Topic：`shop-cache-invalidate`，DLQ：`shop-cache-invalidate-dlq`
+8. L1 仅作加速层，不保证强一致，以 Redis/DB 为准
 
 ### 脏读 vs 缓存不一致（面试要点）
 1. 数据库“脏读”指读取到了未提交的数据，只有在 `Read Uncommitted` 隔离级别下才可能发生。
 2. 本项目更常见的问题是“读旧值/缓存不一致”，并非数据库意义上的脏读。
 3. 产生“读旧值”的典型窗口：更新后缓存未及时删除、删除缓存失败、并发读在删除前命中旧缓存。
 4. 处理方式：更新 DB 后删除 Redis + L1，本地缓存 TTL 较短（30s），降低不一致窗口。
+5. 进一步措施：删除缓存加入重试以降低删除失败带来的旧值风险。
 
 ### 秒杀压测（k6）
 1. 生成测试 token 并写入 Redis
@@ -76,3 +80,24 @@ smtp:
 
 6. 重置库存和订单表(MySQL和Redis)
 `./scripts/reset_seckill.sh`
+
+
+
+
+TODO 主动/被动缓存
+
+
+
+### 延迟双删（项目中暂时不需要）
+场景：并发读写导致旧值回填
+
+- 用户 A 调用 Update 更新 shop=1（DB 已更新）。
+- Update 开始删 Redis（第一次删成功）。
+- 同时用户 B 调用 GetByID(1)：
+  - Redis 已被删，命中失败
+  - B 走 DB，读到了旧主库/旧从库（比如读从库或延迟）
+  - B 把旧值重新写回 Redis（你现在的 loadShopAndCache 会写回）
+- 这样 Redis 又出现旧值。
+
+延迟双删在 120ms 后再删一次，就把这次“旧值回填”清掉。
+所以延迟双删的作用就是：**在并发读写的窗口期里，防止旧数据被重新写回缓存并长期存在。**

@@ -6,15 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/allegro/bigcache/v3"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"hmdp-backend/internal/config"
 	"hmdp-backend/internal/model"
 	"hmdp-backend/internal/utils"
 )
@@ -23,19 +24,74 @@ const lockRetryDelay = 50 * time.Millisecond // 拿不到互斥锁时的短暂�
 const shopBloomSize = 1 << 20                // 约 1M 位布隆过滤器
 var shopBloomSeeds = []uint32{17, 29, 37}    // 简单多哈希种子
 const defaultLocalShopCacheTTL = 30 * time.Second
+const defaultShopCacheDeleteRetryCount = 3
+const defaultShopCacheDeleteRetryDelay = 20 * time.Millisecond
+
+type cacheInvalidateMessage struct {
+	ShopID    int64  `json:"shopId"`
+	CacheKey  string `json:"cacheKey"`
+	CreatedAt int64  `json:"createdAt"`
+	LastError string `json:"lastError,omitempty"`
+}
 
 // ShopService 处理商铺相关业务逻辑
 type ShopService struct {
-	db         *gorm.DB
-	rdb        *redis.Client
-	log        *zap.Logger
-	localCache *bigcache.BigCache
+	db                 *gorm.DB
+	rdb                *redis.Client
+	log                *zap.Logger
+	localCache         *bigcache.BigCache
+	cacheWriter        *kafka.Writer
+	cacheDLQWriter     *kafka.Writer
+	cacheReader        *kafka.Reader
+	cacheDLQReader     *kafka.Reader
+	smtpCfg            utils.SMTPConfig
+	deleteRetryCount   int
+	deleteRetryDelay   time.Duration
 }
 
 // NewShopService 创建 ShopService 实例
-func NewShopService(db *gorm.DB, rdb *redis.Client, log *zap.Logger) *ShopService {
-	cache := initShopLocalCache(log)
-	return &ShopService{db: db, rdb: rdb, log: log, localCache: cache}
+func NewShopService(
+	db *gorm.DB,
+	rdb *redis.Client,
+	cacheWriter *kafka.Writer,
+	cacheDLQWriter *kafka.Writer,
+	cacheReader *kafka.Reader,
+	cacheDLQReader *kafka.Reader,
+	smtpCfg utils.SMTPConfig,
+	cfg config.ShopCacheConfig,
+	log *zap.Logger,
+) *ShopService {
+	cache := initShopLocalCache(cfg.LocalTTL, log)
+	retryCount := cfg.DeleteRetryCount
+	if retryCount <= 0 {
+		retryCount = defaultShopCacheDeleteRetryCount
+	}
+	retryDelay := cfg.DeleteRetryDelay
+	if retryDelay <= 0 {
+		retryDelay = defaultShopCacheDeleteRetryDelay
+	}
+	svc := &ShopService{
+		db:                 db,
+		rdb:                rdb,
+		log:                log,
+		localCache:         cache,
+		cacheWriter:        cacheWriter,
+		cacheDLQWriter:     cacheDLQWriter,
+		cacheReader:        cacheReader,
+		cacheDLQReader:     cacheDLQReader,
+		smtpCfg:            smtpCfg,
+		deleteRetryCount:   retryCount,
+		deleteRetryDelay:   retryDelay,
+	}
+	// 启动缓存补偿消费者协程
+	if svc.cacheReader != nil {
+		go svc.consumeCacheInvalidations(context.Background())
+	}
+	// 启动缓存补偿死信消费者协程
+	if svc.cacheDLQReader != nil {
+		go svc.consumeCacheInvalidateDLQ(context.Background())
+	}
+	return svc
 }
 
 // GetByID 根据shopId获取shop信息 - 使用互斥锁解决缓存击穿问题
@@ -264,8 +320,13 @@ func (s *ShopService) Update(ctx context.Context, shop *model.Shop) error {
 		if err := tx.Model(&model.Shop{ID: shop.ID}).Updates(shop).Error; err != nil {
 			return err
 		}
-		if err := s.rdb.Del(ctx, key).Err(); err != nil {
-			return err
+		// 先删一次缓存，降低并发读命中旧值的窗口；失败时走补偿通道
+		if err := s.deleteShopCacheWithRetry(ctx, key); err != nil {
+			if s.log != nil {
+				s.log.Warn("shop cache delete failed, enqueue compensate", zap.Int64("shopId", shop.ID), zap.Error(err))
+			}
+			// 发布缓存失效消息
+			_ = s.publishCacheInvalidate(ctx, shop.ID, key, err)
 		}
 		s.deleteLocalShop(key)
 		return nil
@@ -348,9 +409,11 @@ func bloomOffsets(id int64) []uint32 {
 	return res
 }
 // initShopLocalCache 初始化本地缓存
-func initShopLocalCache(log *zap.Logger) *bigcache.BigCache {
+func initShopLocalCache(ttl time.Duration, log *zap.Logger) *bigcache.BigCache {
 	// 设置本地缓存的默认 TTL，并使用清理窗口控制过期扫描频率
-	ttl := localShopCacheTTL()
+	if ttl <= 0 {
+		ttl = defaultLocalShopCacheTTL
+	}
 	config := bigcache.DefaultConfig(ttl)
 	if ttl > 0 {
 		// 清理窗口设为 TTL 的一半，降低过期键清理的抖动
@@ -362,15 +425,6 @@ func initShopLocalCache(log *zap.Logger) *bigcache.BigCache {
 		return nil
 	}
 	return cache
-}
-// localShopCacheTTL 获取本地缓存 TTL 支持通过环境变量配置
-func localShopCacheTTL() time.Duration {
-	if raw := os.Getenv("SHOP_LOCAL_CACHE_TTL"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			return d
-		}
-	}
-	return defaultLocalShopCacheTTL
 }
 // getLocalShop 从本地缓存获取店铺信息
 func (s *ShopService) getLocalShop(key string) (*model.Shop, bool) {
@@ -406,6 +460,155 @@ func (s *ShopService) deleteLocalShop(key string) {
 	s.localCache.Delete(key)
 	if s.log != nil {
 		s.log.Info("shop cache delete (local)", zap.String("key", key))
+	}
+}
+
+// deleteShopCacheWithRetry 删除 Redis 缓存，失败时短暂重试
+func (s *ShopService) deleteShopCacheWithRetry(ctx context.Context, key string) error {
+	var err error
+	for i := 0; i < s.deleteRetryCount; i++ {
+		if err = s.rdb.Del(ctx, key).Err(); err == nil {
+			return nil
+		}
+		time.Sleep(s.deleteRetryDelay * time.Duration(i+1))
+	}
+	return err
+}
+
+// deleteShopCacheOnce 单次删除 Redis 缓存并清理本地缓存
+func (s *ShopService) deleteShopCacheOnce(ctx context.Context, key string) error {
+	if err := s.rdb.Del(ctx, key).Err(); err != nil {
+		return err
+	}
+	s.deleteLocalShop(key)
+	return nil
+}
+
+// publishCacheInvalidate 发送缓存补偿消息
+func (s *ShopService) publishCacheInvalidate(ctx context.Context, shopID int64, key string, err error) error {
+	if s.cacheWriter == nil {
+		return errors.New("cache invalidate writer not configured")
+	}
+	payload := cacheInvalidateMessage{
+		ShopID:    shopID,
+		CacheKey:  key,
+		CreatedAt: time.Now().Unix(),
+	}
+	if err != nil {
+		payload.LastError = err.Error()
+	}
+	data, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	message := kafka.Message{
+		Key:   []byte(strconv.FormatInt(shopID, 10)),
+		Value: data,
+	}
+	return s.cacheWriter.WriteMessages(ctx, message)
+}
+
+// publishCacheInvalidateDLQ 发送缓存补偿死信
+func (s *ShopService) publishCacheInvalidateDLQ(ctx context.Context, payload cacheInvalidateMessage, err error) error {
+	if s.cacheDLQWriter == nil {
+		return errors.New("cache invalidate dlq writer not configured")
+	}
+	if err != nil {
+		payload.LastError = err.Error()
+	}
+	data, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	message := kafka.Message{
+		Key:   []byte(strconv.FormatInt(payload.ShopID, 10)),
+		Value: data,
+	}
+	return s.cacheDLQWriter.WriteMessages(ctx, message)
+}
+
+// consumeCacheInvalidations 消费补偿消息，删除缓存；失败直接进入 DLQ
+func (s *ShopService) consumeCacheInvalidations(ctx context.Context) {
+	if s.log != nil {
+		s.log.Info("cache invalidate consumer started")
+	}
+	for {
+		msg, err := s.cacheReader.FetchMessage(ctx)
+		if err != nil {
+			if s.log != nil {
+				s.log.Error("cache invalidate fetch error", zap.Error(err))
+			}
+			time.Sleep(time.Second)
+			continue
+		}
+		var payload cacheInvalidateMessage
+		if err := json.Unmarshal(msg.Value, &payload); err != nil {
+			if s.log != nil {
+				s.log.Error("cache invalidate parse error", zap.Error(err))
+			}
+			_ = s.cacheReader.CommitMessages(ctx, msg)
+			continue
+		}
+		if payload.CacheKey == "" {
+			if s.log != nil {
+				s.log.Warn("cache invalidate missing key", zap.Int64("shopId", payload.ShopID))
+			}
+			_ = s.cacheReader.CommitMessages(ctx, msg)
+			continue
+		}
+		if err := s.deleteShopCacheOnce(ctx, payload.CacheKey); err != nil {
+			if s.log != nil {
+				s.log.Error("cache invalidate delete failed", zap.Int64("shopId", payload.ShopID), zap.Error(err))
+			}
+			// 失败直接进入死信队列
+			_ = s.publishCacheInvalidateDLQ(ctx, payload, err)
+		}
+		if err := s.cacheReader.CommitMessages(ctx, msg); err != nil && s.log != nil {
+			s.log.Error("cache invalidate commit error", zap.Error(err))
+		}
+	}
+}
+
+// consumeCacheInvalidateDLQ 消费补偿死信并告警
+func (s *ShopService) consumeCacheInvalidateDLQ(ctx context.Context) {
+	if s.log != nil {
+		s.log.Info("cache invalidate dlq consumer started")
+	}
+	for {
+		msg, err := s.cacheDLQReader.FetchMessage(ctx)
+		if err != nil {
+			if s.log != nil {
+				s.log.Error("cache invalidate dlq fetch error", zap.Error(err))
+			}
+			time.Sleep(time.Second)
+			continue
+		}
+		var payload cacheInvalidateMessage
+		if err := json.Unmarshal(msg.Value, &payload); err != nil {
+			if s.log != nil {
+				s.log.Error("cache invalidate dlq parse error", zap.Error(err))
+			}
+			_ = s.cacheDLQReader.CommitMessages(ctx, msg)
+			continue
+		}
+		if s.smtpCfg.Host != "" {
+			subject := fmt.Sprintf("[DLQ] shop cache invalidate failed: %d", payload.ShopID)
+			body := fmt.Sprintf(
+				"缓存补偿失败, 请人工处理。\n\nshopId: %d\ncacheKey: %s\nlastError: %s\ncreatedAt: %d\n",
+				payload.ShopID,
+				payload.CacheKey,
+				payload.LastError,
+				payload.CreatedAt,
+			)
+			if err := utils.SendEmail(s.smtpCfg, subject, body); err != nil && s.log != nil {
+				s.log.Error("cache invalidate dlq email failed", zap.Error(err), zap.Int64("shopId", payload.ShopID))
+			}
+		} else if s.log != nil {
+			s.log.Warn("cache invalidate dlq email skipped: smtp not configured", zap.Int64("shopId", payload.ShopID))
+		}
+		if err := s.cacheDLQReader.CommitMessages(ctx, msg); err != nil && s.log != nil {
+			s.log.Error("cache invalidate dlq commit error", zap.Error(err))
+		}
 	}
 }
 

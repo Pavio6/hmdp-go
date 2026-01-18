@@ -47,7 +47,7 @@ func TestWarmShopCacheWithLogicalExpire(t *testing.T) {
 		shopID = parsed
 	}
 
-	svc := NewShopService(db, rdb, log)
+	svc := NewShopService(db, rdb, nil, nil, nil, nil, utils.SMTPConfig{}, config.ShopCacheConfig{}, log)
 	key := utils.CACHE_SHOP_KEY + strconv.FormatInt(shopID, 10)
 	var shop model.Shop
 	if err := db.WithContext(context.Background()).First(&shop, shopID).Error; err != nil {

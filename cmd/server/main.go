@@ -61,23 +61,35 @@ func main() {
 	// 重试和死信的生产者
 	kafkaRetryWriter := data.NewKafkaWriter(cfg.Kafka, cfg.Kafka.RetryTopic)
 	kafkaDLQWriter := data.NewKafkaWriter(cfg.Kafka, cfg.Kafka.DLQTopic)
+	// 缓存补偿的生产者
+	cacheInvalidateWriter := data.NewKafkaWriter(cfg.Kafka, cfg.Kafka.CacheInvalidateTopic)
+	cacheInvalidateDLQWriter := data.NewKafkaWriter(cfg.Kafka, cfg.Kafka.CacheInvalidateDLQTopic)
 	// 主业务消费者
 	kafkaReader := data.NewKafkaReader(cfg.Kafka, cfg.Kafka.Topic, cfg.Kafka.GroupID)
 	// 重试消费者 - 重新处理失败消息
 	kafkaRetryReader := data.NewKafkaReader(cfg.Kafka, cfg.Kafka.RetryTopic, cfg.Kafka.GroupID+"-retry")
 	// 死信消费者 - 审计与告警
 	kafkaDLQReader := data.NewKafkaReader(cfg.Kafka, cfg.Kafka.DLQTopic, cfg.Kafka.GroupID+"-dlq")
+	// 缓存补偿消费者
+	cacheInvalidateReader := data.NewKafkaReader(cfg.Kafka, cfg.Kafka.CacheInvalidateTopic, cfg.Kafka.GroupID+"-shop-cache")
+	cacheInvalidateDLQReader := data.NewKafkaReader(cfg.Kafka, cfg.Kafka.CacheInvalidateDLQTopic, cfg.Kafka.GroupID+"-shop-cache-dlq")
 	defer kafkaWriter.Close()
 	defer kafkaRetryWriter.Close()
 	defer kafkaDLQWriter.Close()
+	defer cacheInvalidateWriter.Close()
+	defer cacheInvalidateDLQWriter.Close()
 	defer kafkaReader.Close()
 	defer kafkaRetryReader.Close()
 	defer kafkaDLQReader.Close()
+	defer cacheInvalidateReader.Close()
+	defer cacheInvalidateDLQReader.Close()
 	log.Info("configured kafka",
 		zap.Strings("brokers", cfg.Kafka.Brokers),
 		zap.String("topic", cfg.Kafka.Topic),
 		zap.String("retryTopic", cfg.Kafka.RetryTopic),
 		zap.String("dlqTopic", cfg.Kafka.DLQTopic),
+		zap.String("cacheInvalidateTopic", cfg.Kafka.CacheInvalidateTopic),
+		zap.String("cacheInvalidateDLQTopic", cfg.Kafka.CacheInvalidateDLQTopic),
 		zap.String("groupID", cfg.Kafka.GroupID),
 		zap.String("retryGroupID", cfg.Kafka.GroupID+"-retry"),
 	)
@@ -90,7 +102,23 @@ func main() {
 		Pass: cfg.SMTP.Pass,
 		To:   cfg.SMTP.To,
 	}
-	services := service.NewRegistry(db, redisClient, kafkaWriter, kafkaRetryWriter, kafkaDLQWriter, kafkaReader, kafkaRetryReader, kafkaDLQReader, smtpCfg, log)
+	services := service.NewRegistry(
+		db,
+		redisClient,
+		kafkaWriter,
+		kafkaRetryWriter,
+		kafkaDLQWriter,
+		cacheInvalidateWriter,
+		cacheInvalidateDLQWriter,
+		kafkaReader,
+		kafkaRetryReader,
+		kafkaDLQReader,
+		cacheInvalidateReader,
+		cacheInvalidateDLQReader,
+		smtpCfg,
+		cfg.App.ShopCache,
+		log,
+	)
 
 	// 初始化 Gin 引擎
 	gin.SetMode(gin.ReleaseMode)

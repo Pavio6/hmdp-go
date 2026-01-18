@@ -15,6 +15,8 @@ kafka:
   topic: "seckill-orders"
   retryTopic: "seckill-orders-retry"
   dlqTopic: "seckill-orders-dlq"
+  cacheInvalidateTopic: "shop-cache-invalidate"
+  cacheInvalidateDLQTopic: "shop-cache-invalidate-dlq"
   groupId: "seckill-order-consumers"
 smtp:
   host: "smtp.qq.com"
@@ -24,5 +26,9 @@ smtp:
   to: "lufeijin9@gmail.com"
 app:
   imageUploadDir: "/opt/homebrew/var/www/hmdp/imgs"
+  shopCache:
+    localTTL: 30s
+    deleteRetryCount: 3
+    deleteRetryDelay: 20ms
 logging:
   level: info

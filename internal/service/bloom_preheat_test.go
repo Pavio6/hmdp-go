@@ -28,7 +28,7 @@ func TestPreheatShopBloom(t *testing.T) {
 	rdb := data.NewRedis(cfg.Redis)
 	defer rdb.Close()
 
-	svc := NewShopService(nil, rdb, zap.NewNop())
+	svc := NewShopService(nil, rdb, nil, nil, nil, nil, utils.SMTPConfig{}, config.ShopCacheConfig{}, zap.NewNop())
 	for id := int64(1); id <= 14; id++ {
 		if err := svc.bloomAdd(ctx, utils.SHOP_BLOOM_KEY, id); err != nil {
 			t.Fatalf("bloom add id=%d: %v", id, err)

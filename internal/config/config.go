@@ -44,6 +44,8 @@ type KafkaConfig struct {
 	Topic   string   `mapstructure:"topic"`
 	RetryTopic string `mapstructure:"retryTopic"`
 	DLQTopic   string `mapstructure:"dlqTopic"`
+	CacheInvalidateTopic    string `mapstructure:"cacheInvalidateTopic"`
+	CacheInvalidateDLQTopic string `mapstructure:"cacheInvalidateDLQTopic"`
 	GroupID string   `mapstructure:"groupId"`
 }
 
@@ -59,6 +61,14 @@ type SMTPConfig struct {
 // AppConfig carries miscellaneous application settings.
 type AppConfig struct {
 	ImageUploadDir string `mapstructure:"imageUploadDir"`
+	ShopCache      ShopCacheConfig `mapstructure:"shopCache"`
+}
+
+// ShopCacheConfig configures local cache and cache delete behavior for shops.
+type ShopCacheConfig struct {
+	LocalTTL           time.Duration `mapstructure:"localTTL"`
+	DeleteRetryCount   int           `mapstructure:"deleteRetryCount"`
+	DeleteRetryDelay   time.Duration `mapstructure:"deleteRetryDelay"`
 }
 
 // LoggingConfig controls structured logging output.
