@@ -32,3 +32,16 @@ app:
     deleteRetryDelay: 20ms
 logging:
   level: info
+observability:
+  serviceName: "hmdp-backend"
+  environment: "local"
+  metrics:
+    enabled: true
+    path: "/metrics"
+  tracing:
+    enabled: true
+    otlpGrpcEndpoint: "localhost:4317"
+    insecure: true
+    sampleRate: 0.1
+  logging:
+    requestIdHeader: "X-Request-ID"

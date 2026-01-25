@@ -13,10 +13,14 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"hmdp-backend/internal/model"
+	"hmdp-backend/internal/observability"
 	"hmdp-backend/internal/utils"
 )
 
@@ -43,6 +47,7 @@ type VoucherOrderService struct {
 	retryReader *kafka.Reader
 	dlqReader   *kafka.Reader
 	smtpCfg     utils.SMTPConfig
+	metrics     *observability.SeckillMetrics
 	log         *zap.Logger
 }
 
@@ -56,6 +61,7 @@ func NewVoucherOrderService(
 	retryReader *kafka.Reader,
 	dlqReader *kafka.Reader,
 	smtpCfg utils.SMTPConfig,
+	metrics *observability.SeckillMetrics,
 	log *zap.Logger,
 ) *VoucherOrderService {
 	if log == nil {
@@ -73,8 +79,10 @@ func NewVoucherOrderService(
 		retryReader: retryReader,
 		dlqReader:   dlqReader,
 		smtpCfg:     smtpCfg,
+		metrics:     metrics,
 		log:         log,
 	}
+	svc.warmupScripts(context.Background())
 	log.Info("voucher order consumers starting")
 	// 异步消费 Kafka 订单消息
 	go svc.consumeOrders(context.Background())
@@ -88,9 +96,19 @@ func NewVoucherOrderService(
 	}
 	return svc
 }
+// warmupScripts 预加载 Lua 脚本到 Redis
+func (s *VoucherOrderService) warmupScripts(ctx context.Context) {
+	if s.rdb == nil || s.seckillLua == nil {
+		return
+	}
+	if _, err := s.seckillLua.Load(ctx, s.rdb).Result(); err != nil {
+		s.log.Warn("seckill lua warmup failed", zap.Error(err))
+	}
+}
 
-// Seckill 下单处理：校验时间/库存，扣减库存后创建订单
+// Seckill 秒杀下单
 func (s *VoucherOrderService) Seckill(ctx context.Context, voucherID, userID int64) (int64, error) {
+	start := time.Now()
 	var info struct {
 		ID        int64
 		BeginTime time.Time
@@ -105,30 +123,37 @@ func (s *VoucherOrderService) Seckill(ctx context.Context, voucherID, userID int
 		Where("v.id = ?", voucherID).
 		Take(&info).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		s.metrics.ObserveSeckill("rejected", "not_found", time.Since(start))
 		return 0, errors.New("优惠券不存在")
 	}
 	if err != nil {
+		s.metrics.ObserveSeckill("rejected", "query_error", time.Since(start))
 		return 0, err
 	}
 	if info.Status != 1 {
+		s.metrics.ObserveSeckill("rejected", "inactive", time.Since(start))
 		return 0, errors.New("优惠券已下架或过期")
 	}
 
 	now := time.Now()
 	if now.Before(info.BeginTime) {
+		s.metrics.ObserveSeckill("rejected", "not_started", time.Since(start))
 		return 0, errors.New("秒杀尚未开始")
 	}
 	if now.After(info.EndTime) {
+		s.metrics.ObserveSeckill("rejected", "ended", time.Since(start))
 		return 0, errors.New("秒杀已结束")
 	}
 	// 库存不足直接返回
 	if info.Stock <= 0 {
+		s.metrics.ObserveSeckill("rejected", "no_stock", time.Since(start))
 		return 0, errors.New("库存不足")
 	}
 
 	// 生成订单ID
 	orderID, err := s.idWorker.NextId(ctx, "order")
 	if err != nil {
+		s.metrics.ObserveSeckill("rejected", "id_error", time.Since(start))
 		return 0, err
 	}
 
@@ -138,6 +163,7 @@ func (s *VoucherOrderService) Seckill(ctx context.Context, voucherID, userID int
 	// 执行 Lua 脚本，完成库存校验与扣减、用户下单资格校验与标记
 	res, err := s.seckillLua.Run(ctx, s.rdb, []string{stockKey, orderSetKey}, userID).Int()
 	if err != nil {
+		s.metrics.ObserveSeckill("rejected", "lua_error", time.Since(start))
 		return 0, err
 	}
 
@@ -152,14 +178,19 @@ func (s *VoucherOrderService) Seckill(ctx context.Context, voucherID, userID int
 		}
 		if err := s.publishOrder(ctx, msg); err != nil {
 			s.log.Error("publish kafka failed, queued for retry", zap.Error(err), zap.Int64("orderId", orderID))
+			s.metrics.ObserveSeckill("accepted", "publish_failed", time.Since(start))
 			return orderID, nil
 		}
+		s.metrics.ObserveSeckill("accepted", "ok", time.Since(start))
 		return orderID, nil
 	case 1:
+		s.metrics.ObserveSeckill("rejected", "no_stock", time.Since(start))
 		return 0, errors.New("库存不足")
 	case 2:
+		s.metrics.ObserveSeckill("rejected", "duplicate", time.Since(start))
 		return 0, errors.New("每人限购一单")
 	default:
+		s.metrics.ObserveSeckill("rejected", "lua_failed", time.Since(start))
 		return 0, errors.New("秒杀失败")
 	}
 }
@@ -185,8 +216,21 @@ func (s *VoucherOrderService) publishOrder(ctx context.Context, msg orderMessage
 		Key:   []byte(strconv.FormatInt(msg.VoucherID, 10)),
 		Value: payload,
 	}
+	topic := s.writer.Topic
+	if topic == "" {
+		topic = "unknown"
+	}
+	spanCtx, span := s.startKafkaProduceSpan(ctx, topic)
+	defer span.End()
+	observability.InjectKafkaHeaders(spanCtx, &message.Headers)
 	// 将消息写入kafka
-	return s.writer.WriteMessages(ctx, message)
+	if err := s.writer.WriteMessages(spanCtx, message); err != nil {
+		span.RecordError(err)
+		s.metrics.ObserveKafkaPublish(topic, "error")
+		return err
+	}
+	s.metrics.ObserveKafkaPublish(topic, "success")
+	return nil
 }
 
 // consumeOrders 异步创建订单（Kafka 消费端）
@@ -209,23 +253,37 @@ func (s *VoucherOrderService) consumeOrders(ctx context.Context) {
 			_ = s.reader.CommitMessages(ctx, msg)
 			continue
 		}
+		topic := msg.Topic
+		if topic == "" {
+			topic = "unknown"
+		}
+		consumeCtx := observability.ExtractKafkaContext(ctx, msg.Headers)
+		consumeCtx, span := s.startKafkaConsumeSpan(consumeCtx, topic)
+		start := time.Now()
 		// 处理订单创建
-		if err := s.handleConsume(ctx, payload); err != nil {
+		if err := s.handleConsume(consumeCtx, payload); err != nil {
+			span.RecordError(err)
 			if errors.Is(err, errRetryEnqueued) {
+				s.metrics.ObserveKafkaConsume(topic, "retry", time.Since(start))
 				s.log.Info("consumeOrders retry enqueued, committing offset",
 					zap.Int64("orderId", payload.OrderID),
 					zap.Int64("voucherId", payload.VoucherID),
 				)
+				span.End()
 				// 如果已进入重试队列或死信 提交 offset
 				if err := s.reader.CommitMessages(ctx, msg); err != nil {
 					s.log.Error("consumeOrders commit error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
 				}
 				continue
 			}
+			s.metrics.ObserveKafkaConsume(topic, "error", time.Since(start))
 			s.log.Error("consumeOrders handle error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
+			span.End()
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
+		s.metrics.ObserveKafkaConsume(topic, "success", time.Since(start))
+		span.End()
 		// 提交 offset
 		if err := s.reader.CommitMessages(ctx, msg); err != nil {
 			s.log.Error("consumeOrders commit error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
@@ -250,6 +308,13 @@ func (s *VoucherOrderService) consumeRetryOrders(ctx context.Context) {
 			_ = s.retryReader.CommitMessages(ctx, msg)
 			continue
 		}
+		topic := msg.Topic
+		if topic == "" {
+			topic = "unknown"
+		}
+		consumeCtx := observability.ExtractKafkaContext(ctx, msg.Headers)
+		consumeCtx, span := s.startKafkaConsumeSpan(consumeCtx, topic)
+		start := time.Now()
 		s.log.Info("consumeRetryOrders received",
 			zap.Int64("orderId", payload.OrderID),
 			zap.Int64("voucherId", payload.VoucherID),
@@ -257,22 +322,29 @@ func (s *VoucherOrderService) consumeRetryOrders(ctx context.Context) {
 			zap.Int64("nextRetryAt", payload.NextRetryAt),
 		)
 
-		if err := s.handleConsume(ctx, payload); err != nil {
+		if err := s.handleConsume(consumeCtx, payload); err != nil {
+			span.RecordError(err)
 			if errors.Is(err, errRetryEnqueued) {
+				s.metrics.ObserveKafkaConsume(topic, "retry", time.Since(start))
 				s.log.Info("consumeRetryOrders retry enqueued, committing offset",
 					zap.Int64("orderId", payload.OrderID),
 					zap.Int64("voucherId", payload.VoucherID),
 				)
+				span.End()
 				if err := s.retryReader.CommitMessages(ctx, msg); err != nil {
 					s.log.Error("consumeRetryOrders commit error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
 				}
 				continue
 			}
+			s.metrics.ObserveKafkaConsume(topic, "error", time.Since(start))
 			s.log.Error("consumeRetryOrders handle error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
+			span.End()
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
 
+		s.metrics.ObserveKafkaConsume(topic, "success", time.Since(start))
+		span.End()
 		if err := s.retryReader.CommitMessages(ctx, msg); err != nil {
 			s.log.Error("consumeRetryOrders commit error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
 		}
@@ -296,6 +368,13 @@ func (s *VoucherOrderService) consumeDLQ(ctx context.Context) {
 			_ = s.dlqReader.CommitMessages(ctx, msg)
 			continue
 		}
+		topic := msg.Topic
+		if topic == "" {
+			topic = "unknown"
+		}
+		consumeCtx := observability.ExtractKafkaContext(ctx, msg.Headers)
+		consumeCtx, span := s.startKafkaConsumeSpan(consumeCtx, topic)
+		start := time.Now()
 		// 发送邮件告警
 		if s.smtpCfg.Host != "" {
 			subject := fmt.Sprintf("[DLQ] seckill order failed: %d", payload.OrderID)
@@ -309,6 +388,7 @@ func (s *VoucherOrderService) consumeDLQ(ctx context.Context) {
 				payload.CreatedAt,
 			)
 			if err := utils.SendEmail(s.smtpCfg, subject, body); err != nil {
+				span.RecordError(err)
 				s.log.Error("consumeDLQ email failed", zap.Error(err), zap.Int64("orderId", payload.OrderID))
 			} else {
 				s.log.Info("consumeDLQ email sent", zap.Int64("orderId", payload.OrderID))
@@ -316,6 +396,8 @@ func (s *VoucherOrderService) consumeDLQ(ctx context.Context) {
 		} else {
 			s.log.Warn("consumeDLQ email skipped: smtp not configured", zap.Int64("orderId", payload.OrderID))
 		}
+		s.metrics.ObserveKafkaConsume(topic, "success", time.Since(start))
+		span.End()
 		// 提交 offset
 		if err := s.dlqReader.CommitMessages(ctx, msg); err != nil {
 			s.log.Error("consumeDLQ commit error", zap.Error(err), zap.Int64("orderId", payload.OrderID))
@@ -373,7 +455,7 @@ func (s *VoucherOrderService) handleConsume(ctx context.Context, payload orderMe
 	)
 	return nil
 }
-
+// retryPhaseLabel 返回重试阶段标签
 func retryPhaseLabel(retryCount int) string {
 	switch retryCount {
 	case 0:
@@ -409,6 +491,7 @@ func (s *VoucherOrderService) publishRetryOrDLQ(ctx context.Context, payload ord
 			zap.Int("retryCount", payload.RetryCount),
 			zap.Int64("nextRetryAt", payload.NextRetryAt),
 		)
+		s.metrics.ObserveRetry("retry")
 		if err := s.publishRetry(ctx, payload); err != nil {
 			return err
 		}
@@ -421,6 +504,7 @@ func (s *VoucherOrderService) publishRetryOrDLQ(ctx context.Context, payload ord
 		zap.Int64("voucherId", payload.VoucherID),
 		zap.Int("retryCount", payload.RetryCount),
 	)
+	s.metrics.ObserveRetry("dlq")
 	// 超过最大重试次数，写入死信 Topic
 	if err := s.publishDLQ(ctx, payload); err != nil {
 		return err
@@ -438,11 +522,21 @@ func (s *VoucherOrderService) publishRetry(ctx context.Context, payload orderMes
 		Key:   []byte(strconv.FormatInt(payload.VoucherID, 10)),
 		Value: data,
 	}
+	topic := s.retryWriter.Topic
+	if topic == "" {
+		topic = "unknown"
+	}
+	spanCtx, span := s.startKafkaProduceSpan(ctx, topic)
+	defer span.End()
+	observability.InjectKafkaHeaders(spanCtx, &message.Headers)
 	// 写入重试 Topic
-	if err := s.retryWriter.WriteMessages(ctx, message); err != nil {
+	if err := s.retryWriter.WriteMessages(spanCtx, message); err != nil {
+		span.RecordError(err)
 		s.log.Error("publish retry failed", zap.Error(err), zap.Int64("orderId", payload.OrderID))
+		s.metrics.ObserveKafkaPublish(topic, "error")
 		return err
 	}
+	s.metrics.ObserveKafkaPublish(topic, "success")
 	return nil
 }
 
@@ -456,10 +550,20 @@ func (s *VoucherOrderService) publishDLQ(ctx context.Context, payload orderMessa
 		Key:   []byte(strconv.FormatInt(payload.VoucherID, 10)),
 		Value: data,
 	}
-	if err := s.dlqWriter.WriteMessages(ctx, message); err != nil {
+	topic := s.dlqWriter.Topic
+	if topic == "" {
+		topic = "unknown"
+	}
+	spanCtx, span := s.startKafkaProduceSpan(ctx, topic)
+	defer span.End()
+	observability.InjectKafkaHeaders(spanCtx, &message.Headers)
+	if err := s.dlqWriter.WriteMessages(spanCtx, message); err != nil {
+		span.RecordError(err)
 		s.log.Error("publish dlq failed", zap.Error(err), zap.Int64("orderId", payload.OrderID))
+		s.metrics.ObserveKafkaPublish(topic, "error")
 		return err
 	}
+	s.metrics.ObserveKafkaPublish(topic, "success")
 	return nil
 }
 
@@ -563,4 +667,32 @@ func isDuplicateKey(err error) bool {
 		return mysqlErr.Number == 1062
 	}
 	return false
+}
+// startKafkaProduceSpan 为 Kafka 生产操作创建 OpenTelemetry Span
+func (s *VoucherOrderService) startKafkaProduceSpan(ctx context.Context, topic string) (context.Context, trace.Span) {
+	if topic == "" {
+		topic = "unknown"
+	}
+	tracer := otel.Tracer("hmdp-backend")
+	return tracer.Start(ctx, "kafka.produce",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "kafka"),
+			attribute.String("messaging.destination", topic),
+		),
+	)
+}
+// startKafkaConsumeSpan 为 Kafka 消费操作创建 OpenTelemetry Span
+func (s *VoucherOrderService) startKafkaConsumeSpan(ctx context.Context, topic string) (context.Context, trace.Span) {
+	if topic == "" {
+		topic = "unknown"
+	}
+	tracer := otel.Tracer("hmdp-backend")
+	return tracer.Start(ctx, "kafka.consume",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "kafka"),
+			attribute.String("messaging.destination", topic),
+		),
+	)
 }

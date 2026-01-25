@@ -2,3 +2,8 @@
 
 2. retry和DLQ测试还没通过。
 
+	"gorm.io/gorm"
+	"gorm.io/plugin/opentelemetry/tracing"
+    	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/extra/redisotel/v9"
+	"github.com/redis/go-redis/v9"

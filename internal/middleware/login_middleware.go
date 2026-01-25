@@ -75,6 +75,11 @@ func GetLoginUser(ctx *gin.Context) (*dto.UserDTO, bool) {
 
 // isAnonymousPath 这些路径放行 不需要登录即可访问
 func isAnonymousPath(path string) bool {
+	switch path {
+	case "/healthz", "/readyz", "/metrics":
+		return true
+	default:
+	}
 	for _, prefix := range []string{"/shop", "/voucher", "/shop-type", "/upload"} {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true

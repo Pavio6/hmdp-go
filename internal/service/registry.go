@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 
 	"hmdp-backend/internal/config"
+	"hmdp-backend/internal/observability"
 	"hmdp-backend/internal/utils"
 )
 
@@ -38,6 +39,7 @@ func NewRegistry(
 	cacheInvalidateDLQReader *kafka.Reader,
 	smtpCfg utils.SMTPConfig,
 	shopCacheCfg config.ShopCacheConfig,
+	seckillMetrics *observability.SeckillMetrics,
 	log *zap.Logger,
 ) *Registry {
 	if log == nil {
@@ -52,7 +54,7 @@ func NewRegistry(
 		Voucher:        NewVoucherService(db, seckillSvc, rdb),
 		SeckillVoucher: seckillSvc,
 		User:           NewUserService(db, rdb),
-		VoucherOrder:   NewVoucherOrderService(db, rdb, kafkaWriter, kafkaRetryWriter, kafkaDLQWriter, kafkaReader, kafkaRetryReader, kafkaDLQReader, smtpCfg, log),
+		VoucherOrder:   NewVoucherOrderService(db, rdb, kafkaWriter, kafkaRetryWriter, kafkaDLQWriter, kafkaReader, kafkaRetryReader, kafkaDLQReader, smtpCfg, seckillMetrics, log),
 		Follow:         followSvc,
 	}
 }

@@ -10,11 +10,17 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/extra/redisotel/v9"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
+	"gorm.io/plugin/opentelemetry/tracing"
 
 	"hmdp-backend/internal/config"
 	"hmdp-backend/internal/data"
+	"hmdp-backend/internal/handler"
 	"hmdp-backend/internal/middleware"
+	"hmdp-backend/internal/observability"
 	"hmdp-backend/internal/router"
 	"hmdp-backend/internal/service"
 	"hmdp-backend/internal/utils"
@@ -33,13 +39,53 @@ func main() {
 		panic(err)
 	}
 	defer log.Sync()
+	serviceName := cfg.Observability.ServiceName
+	if serviceName == "" {
+		serviceName = "hmdp-backend"
+	}
+	environment := cfg.Observability.Environment
+	if environment == "" {
+		environment = "local"
+	}
+	log = log.With(
+		zap.String("service", serviceName),
+		zap.String("env", environment),
+	)
 	log.Info("loaded config", zap.String("path", cfgPath))
+
+	tracingCfg := observability.TracingConfig{
+		Enabled:          cfg.Observability.Tracing.Enabled,
+		OTLPGrpcEndpoint: cfg.Observability.Tracing.OTLPGrpcEndpoint,
+		Insecure:         cfg.Observability.Tracing.Insecure,
+		SampleRate:       cfg.Observability.Tracing.SampleRate,
+	}
+	resourceCfg := observability.ResourceConfig{
+		ServiceName: serviceName,
+		Environment: environment,
+	}
+	tracingShutdown, err := observability.SetupTracing(context.Background(), tracingCfg, resourceCfg)
+	if err != nil {
+		log.Fatal("tracing init failed", zap.Error(err))
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracingShutdown(shutdownCtx); err != nil {
+			log.Warn("tracing shutdown failed", zap.Error(err))
+		}
+	}()
 
 	// 初始化 MySQL
 	db, err := data.NewMySQL(cfg.MySQL, log)
 	if err != nil {
 		log.Fatal("mysql init failed", zap.Error(err))
 	}
+	if cfg.Observability.Tracing.Enabled {
+		if err := db.Use(tracing.NewPlugin()); err != nil {
+			log.Warn("gorm tracing plugin init failed", zap.Error(err))
+		}
+	}
+	// 
 	sqlDB, err := db.DB()
 	if err != nil {
 		log.Fatal("mysql db handle", zap.Error(err))
@@ -53,6 +99,11 @@ func main() {
 		log.Fatal("redis ping failed", zap.Error(err))
 	}
 	defer redisClient.Close()
+	if cfg.Observability.Tracing.Enabled {
+		if err := redisotel.InstrumentTracing(redisClient); err != nil {
+			log.Warn("redis tracing init failed", zap.Error(err))
+		}
+	}
 	log.Info("connected to redis", zap.String("addr", cfg.Redis.Addr))
 
 	// 初始化 Kafka
@@ -102,6 +153,12 @@ func main() {
 		Pass: cfg.SMTP.Pass,
 		To:   cfg.SMTP.To,
 	}
+	var seckillMetrics *observability.SeckillMetrics
+	var metricsRegistry *prometheus.Registry
+	if cfg.Observability.Metrics.Enabled {
+		metricsRegistry = observability.NewMetricsRegistry()
+		seckillMetrics = observability.NewSeckillMetrics(metricsRegistry, serviceName)
+	}
 	services := service.NewRegistry(
 		db,
 		redisClient,
@@ -117,21 +174,43 @@ func main() {
 		cacheInvalidateDLQReader,
 		smtpCfg,
 		cfg.App.ShopCache,
+		seckillMetrics,
 		log,
 	)
 
 	// 初始化 Gin 引擎
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
-	engine.Use(gin.Logger())
 	engine.Use(gin.Recovery())
 	engine.Use(middleware.ErrorHandler(log))
+	engine.Use(middleware.RequestIDMiddleware(cfg.Observability.Logging.RequestIDHeader))
+	// 集成 OpenTelemetry 中间件
+	if cfg.Observability.Tracing.Enabled {
+		engine.Use(otelgin.Middleware(serviceName))
+	}
+	if cfg.Observability.Metrics.Enabled {
+		// 初始化 HTTP 指标中间件
+		metrics := observability.NewHTTPMetrics(metricsRegistry, serviceName)
+		engine.Use(metrics.Middleware())
+		metricsPath := cfg.Observability.Metrics.Path
+		if metricsPath == "" {
+			metricsPath = "/metrics"
+		}
+		// 注册 Prometheus 指标端点
+		engine.GET(metricsPath, gin.WrapH(metrics.Handler()))
+	}
+	engine.Use(middleware.RequestLogger(log))
 
 	uploadDir := cfg.App.ImageUploadDir
 	if uploadDir == "" {
 		uploadDir = utils.IMAGE_UPLOAD_DIR
 	}
 	log.Info("configured upload directory", zap.String("path", uploadDir))
+	// 注册健康检查端点
+	healthHandler := handler.NewHealthHandler(sqlDB, redisClient, cfg.Kafka.Brokers, log)
+	engine.GET("/healthz", healthHandler.Healthz)
+	engine.GET("/readyz", healthHandler.Readyz)
+
 	router.RegisterRoutes(engine, services, uploadDir, redisClient)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

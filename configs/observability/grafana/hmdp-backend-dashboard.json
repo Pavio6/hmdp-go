@@ -1,0 +1,141 @@
+{
+  "uid": "hmdp-backend",
+  "title": "HMDP Backend - Business Metrics",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Seckill Requests (5m)",
+      "id": 1,
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(increase(seckill_order_requests_total[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Seckill Success (5m)",
+      "id": 2,
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(increase(seckill_order_requests_total{result=\"accepted\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Seckill Rejected (5m)",
+      "id": 3,
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(increase(seckill_order_requests_total{result=\"rejected\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Kafka Consume Errors (5m)",
+      "id": 4,
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(increase(seckill_kafka_consume_total{result=\"error\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Seckill Requests by Result",
+      "id": 5,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "sum(rate(seckill_order_requests_total[1m])) by (result)",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Seckill Rejection Reasons",
+      "id": 6,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {
+          "expr": "sum(rate(seckill_order_requests_total{result=\"rejected\"}[1m])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Seckill Latency P95",
+      "id": 7,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(seckill_order_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Requests",
+      "id": 8,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_total[1m])) by (status)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka Publish/Consume",
+      "id": 9,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "expr": "sum(rate(seckill_kafka_publish_total[1m])) by (topic)",
+          "legendFormat": "publish {{topic}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(seckill_kafka_consume_total[1m])) by (topic)",
+          "legendFormat": "consume {{topic}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka Consume Latency P95",
+      "id": 10,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(seckill_kafka_consume_duration_seconds_bucket[5m])) by (le, topic))",
+          "legendFormat": "{{topic}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -165,7 +165,7 @@ func TestSeckillNoOversell(t *testing.T) {
 	writer, retryWriter, dlqWriter, reader, retryReader, cleanup := newTestKafka(t, ctx)
 	defer cleanup()
 
-	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, newTestLogger(t))
+	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, nil, newTestLogger(t))
 
 	// 使用现有的券 ID
 	const voucherID = int64(12)
@@ -252,7 +252,7 @@ func TestSeckillOneOrderPerUser(t *testing.T) {
 	writer, retryWriter, dlqWriter, reader, retryReader, cleanup := newTestKafka(t, ctx)
 	defer cleanup()
 
-	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, newTestLogger(t))
+	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, nil, newTestLogger(t))
 
 	const voucherID = int64(12)
 
@@ -312,7 +312,7 @@ func TestSeckillSingleUserRedisFlow(t *testing.T) {
 	writer, retryWriter, dlqWriter, reader, retryReader, cleanup := newTestKafka(t, ctx)
 	defer cleanup()
 
-	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, newTestLogger(t))
+	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, nil, newTestLogger(t))
 
 	const voucherID = int64(12)
 	const userID = int64(2)
@@ -422,7 +422,7 @@ func TestSeckillKafkaDownWritesRetry(t *testing.T) {
 		_ = retryReader.Close()
 	}()
 
-	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, newTestLogger(t))
+	svc := NewVoucherOrderService(db, rdb, writer, retryWriter, dlqWriter, reader, retryReader, nil, utils.SMTPConfig{}, nil, newTestLogger(t))
 
 	orderID, err := svc.Seckill(ctx, voucherID, userID)
 	if err != nil {

@@ -86,7 +86,23 @@ smtp:
 `./scripts/reset_seckill.sh`
 
 
+7. 可观测性
+``` text
+Prometheus 的作用是“采集 + 存储 + 查询”指标数据，本质上是指标数据库；Grafana 只是“可视化前端”，不负责采集和存储。
 
+关系是：
+
+Prometheus：定时抓取 /metrics → 存储时间序列 → 提供查询接口（PromQL）
+Grafana：连接 Prometheus → 用 PromQL 取数据 → 画图/看板/告警
+所以你在 Grafana 里看到的图，底层数据都来自 Prometheus。没有 Prometheus，Grafana 就拿不到这些指标数据。
+```
+
+### 可观测性与 Kafka 消费稳定性（新增）
+1. 观测能力
+   - HTTP 请求结构化日志、请求 ID、指标（/metrics）、链路追踪（OTLP -> Jaeger）
+   - 秒杀业务指标：请求结果/耗时、Kafka 生产/消费、重试/DLQ 统计
+2. 常见问题说明
+   - Redis `NOSCRIPT`：首次执行 Lua 可能出现，已在启动时预加载脚本规避
 
 TODO 主动/被动缓存
 

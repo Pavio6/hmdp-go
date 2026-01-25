@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config mirrors the Spring Boot application.yaml structure.
+// Config defines the application configuration structure
 type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	MySQL   MySQLConfig   `mapstructure:"mysql"`
@@ -16,14 +16,15 @@ type Config struct {
 	SMTP    SMTPConfig    `mapstructure:"smtp"`
 	App     AppConfig     `mapstructure:"app"`
 	Logging LoggingConfig `mapstructure:"logging"`
+	Observability ObservabilityConfig `mapstructure:"observability"`
 }
 
-// ServerConfig defines HTTP server options.
+// ServerConfig defines HTTP server options
 type ServerConfig struct {
 	Port int `mapstructure:"port"`
 }
 
-// MySQLConfig configures the relational database connection.
+// MySQLConfig configures the relational database connection
 type MySQLConfig struct {
 	DSN             string        `mapstructure:"dsn"`
 	MaxIdleConns    int           `mapstructure:"maxIdleConns"`
@@ -74,6 +75,34 @@ type ShopCacheConfig struct {
 // LoggingConfig controls structured logging output.
 type LoggingConfig struct {
 	Level string `mapstructure:"level"`
+}
+
+// ObservabilityConfig controls health checks, metrics, and tracing.
+type ObservabilityConfig struct {
+	ServiceName string `mapstructure:"serviceName"`
+	Environment string `mapstructure:"environment"`
+	Metrics     MetricsConfig `mapstructure:"metrics"`
+	Tracing     TracingConfig `mapstructure:"tracing"`
+	Logging     ObservabilityLoggingConfig `mapstructure:"logging"`
+}
+
+// MetricsConfig configures Prometheus metrics.
+type MetricsConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Path    string `mapstructure:"path"` // Metrics endpoint path
+}
+
+// TracingConfig configures OpenTelemetry tracing.
+type TracingConfig struct {
+	Enabled          bool    `mapstructure:"enabled"` // 是否启用追踪
+	OTLPGrpcEndpoint string  `mapstructure:"otlpGrpcEndpoint"` // OTLP gRPC 端点
+	Insecure         bool    `mapstructure:"insecure"` // 是否使用不安全连接
+	SampleRate       float64 `mapstructure:"sampleRate"` // 采样率
+}
+
+// ObservabilityLoggingConfig configures request logging behavior.
+type ObservabilityLoggingConfig struct {
+	RequestIDHeader string `mapstructure:"requestIdHeader"`
 }
 
 // Load loads configuration from a YAML file path.

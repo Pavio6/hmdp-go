@@ -28,7 +28,7 @@ import (
 //
 //	go run cmd/gen_tokens/main.go -in tb_user.csv -out tokens.csv -redis 127.0.0.1:6379
 func main() {
-	in := flag.String("in", "", "input CSV file (must contain phone column)")
+	in := flag.String("in", "hmdp_tb_user.csv", "input CSV file (must contain phone column)")
 	out := flag.String("out", "tokens.csv", "output CSV file")
 	redisAddr := flag.String("redis", "127.0.0.1:6379", "redis address")
 	redisDB := flag.Int("db", 0, "redis db index")
