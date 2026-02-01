@@ -28,7 +28,7 @@ func TestWarmShopCacheWithLogicalExpire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	log, err := logger.New(cfg.Logging.Level)
+	log, err := logger.New(cfg.Logging.Level, cfg.Observability.Environment)
 	if err != nil {
 		t.Fatalf("init logger: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestLoadShopData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	log, err := logger.New(cfg.Logging.Level)
+	log, err := logger.New(cfg.Logging.Level, cfg.Observability.Environment)
 	if err != nil {
 		t.Fatalf("init logger: %v", err)
 	}

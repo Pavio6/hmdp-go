@@ -29,6 +29,7 @@ func NewRedisIdWorker(client *redis.Client) *RedisIdWorker {
 }
 
 // NextId 生成全局唯一ID
+// 基于时间戳+Redis自增序列
 func (w *RedisIdWorker) NextId(ctx context.Context, keyPrefix string) (int64, error) {
 	// 1. 生成时间戳
 	now := time.Now()

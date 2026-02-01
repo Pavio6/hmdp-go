@@ -34,11 +34,6 @@ func main() {
 	}
 	// 加载配置
 	cfg := config.MustLoad(cfgPath)
-	log, err := logger.New(cfg.Logging.Level)
-	if err != nil {
-		panic(err)
-	}
-	defer log.Sync()
 	serviceName := cfg.Observability.ServiceName
 	if serviceName == "" {
 		serviceName = "hmdp-backend"
@@ -47,6 +42,11 @@ func main() {
 	if environment == "" {
 		environment = "local"
 	}
+	log, err := logger.New(cfg.Logging.Level, environment)
+	if err != nil {
+		panic(err)
+	}
+	defer log.Sync()
 	log = log.With(
 		zap.String("service", serviceName),
 		zap.String("env", environment),
